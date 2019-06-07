@@ -125,11 +125,15 @@ class SafeCopy a where
     errorTypeName _ = "<unknown type>"
 
 #ifdef DEFAULT_SIGNATURES
-    default getCopy :: Serialize a => Contained (Get a)
-    getCopy = contain get
+    -- I'm not opposed to default signatures, but this implementation
+    -- will cause problems if there are subtypes of a which have
+    -- SafeCopy instances.
 
-    default putCopy :: Serialize a => a -> Contained Put
-    putCopy = contain . put
+    -- default getCopy :: Serialize a => Contained (Get a)
+    -- getCopy = contain get
+
+    -- default putCopy :: Serialize a => a -> Contained Put
+    -- putCopy = contain . put
 #endif
 
 
@@ -214,7 +218,7 @@ getSafePut
 
 -- | The extended_extension kind lets the system know that there is
 --   at least one previous and one future version of this type.
-extended_extension :: (SafeCopy a, Migrate a, Migrate (Reverse a)) => Kind a
+extended_extension :: (Migrate a, Migrate (Reverse a)) => Kind a
 extended_extension = Extended extension
 
 -- | The extended_base kind lets the system know that there is
@@ -227,7 +231,7 @@ extended_base = Extended base
 --   can only extend a single other data type. However, it is
 --   perfectly fine to build chains of extensions. The migrations
 --   between each step is handled automatically.
-extension :: (SafeCopy a, Migrate a) => Kind a
+extension :: Migrate a => Kind a
 extension = Extends Proxy
 
 -- | The default kind. Does not extend any type.
@@ -379,7 +383,7 @@ versionFromProxy _ = version
 versionFromKind :: (SafeCopy a) => Kind a -> Version a
 versionFromKind _ = version
 
-versionFromReverseKind :: (SafeCopy a, SafeCopy (MigrateFrom (Reverse a))) => Kind a -> Version (MigrateFrom (Reverse a))
+versionFromReverseKind :: (SafeCopy (MigrateFrom (Reverse a))) => Kind a -> Version (MigrateFrom (Reverse a))
 versionFromReverseKind _ = version
 
 kindFromProxy :: SafeCopy a => Proxy a -> Kind a
