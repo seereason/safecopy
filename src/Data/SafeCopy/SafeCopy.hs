@@ -166,12 +166,12 @@ instance GPutCopy a p => GPutCopy (M1 C c a) p where
       (when (size >= 2) (putWord8 (fromIntegral code))) *> gputCopy p d x
     {-# INLINE gputCopy #-}
 
-instance GPutCopy f p => GPutCopy (M1 S c f) p where
-    gputCopy p d = gputCopy p d . unM1
-    {-# INLINE gputCopy #-}
-
 instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :*: g) p where
     gputCopy p d (a :*: b) = gputCopy p d a *> gputCopy p d b
+    {-# INLINE gputCopy #-}
+
+instance GPutCopy f p => GPutCopy (M1 S c f) p where
+    gputCopy p d = gputCopy p d . unM1
     {-# INLINE gputCopy #-}
 
 instance SafeCopy a => GPutCopy (K1 R a) p where
