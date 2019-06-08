@@ -5,6 +5,18 @@
 #ifdef DEFAULT_SIGNATURES
 {-# LANGUAGE DefaultSignatures #-}
 #endif
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -24,8 +36,12 @@ module Data.SafeCopy.SafeCopy where
 import Data.Serialize
 
 import Control.Monad
+import Data.Bits (shiftR)
 import Data.Int (Int32)
 import Data.List
+import Data.Word
+import GHC.Generics
+import Generic.Data as G
 
 -- | The central mechanism for dealing with version control.
 --
@@ -125,17 +141,115 @@ class SafeCopy a where
     errorTypeName _ = "<unknown type>"
 
 #ifdef DEFAULT_SIGNATURES
-    -- I'm not opposed to default signatures, but this implementation
-    -- will cause problems if there are subtypes of a which have
-    -- SafeCopy instances.
+    default putCopy :: (GPutCopy (Rep a) (), Constructors a, GDatatype (Rep a)) => a -> Contained Put
+    putCopy a = (contain . gputCopy () (ConstructorInfo (gdatatypeName @a) (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
-    -- default getCopy :: Serialize a => Contained (Get a)
-    -- getCopy = contain get
+    default getCopy :: (GGetCopy (Rep a) (), Constructors a, GDatatype (Rep a)) => Contained (Get a)
+    getCopy = contain (to <$> ggetCopy () (ConstructorCount (gdatatypeName @a) (fromIntegral (gconNum @a))))
 
-    -- default putCopy :: Serialize a => a -> Contained Put
-    -- putCopy = contain . put
+------------------------------------------------------------------------
+
+class GPutCopy f p where
+    gputCopy :: p -> DatatypeInfo -> f p -> Put
+
+instance GPutCopy a p => GPutCopy (M1 D c a) p where
+    gputCopy p d (M1 a) = gputCopy p d a
+    {-# INLINE gputCopy #-}
+
+instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
+    gputCopy p d (L1 x) = gputCopy @f p d x
+    gputCopy p d (R1 x) = gputCopy @g p d x
+    {-# INLINE gputCopy #-}
+
+instance GPutCopy a p => GPutCopy (M1 C c a) p where
+    gputCopy p d@(ConstructorInfo _ size code) (M1 x) =
+      (when (size >= 2) (putWord8 (fromIntegral code))) *> gputCopy p d x
+    {-# INLINE gputCopy #-}
+
+instance GPutCopy f p => GPutCopy (M1 S c f) p where
+    gputCopy p d = gputCopy p d . unM1
+    {-# INLINE gputCopy #-}
+
+instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :*: g) p where
+    gputCopy p d (a :*: b) = gputCopy p d a *> gputCopy p d b
+    {-# INLINE gputCopy #-}
+
+instance SafeCopy a => GPutCopy (K1 R a) p where
+    gputCopy _ _ (K1 x) = safePut x
+    {-# INLINE gputCopy #-}
+
+{-
+instance (Generic a, GPutCopy (Rep a) p) => GPutCopy (K1 R a) p where
+    gputCopy p d =
+      gputCopy p d . from . unK1
+    {-# INLINE gputCopy #-}
+-}
+
+instance GPutCopy U1 p where
+    gputCopy _ _ _ = pure ()
+    {-# INLINE gputCopy #-}
+
+------------------------------------------------------------------------
+
+class GGetCopy f p where
+    ggetCopy :: p -> DatatypeInfo -> Get (f a)
+
+-- | The M1 type has a fourth type parameter p:
+--
+--     newtype M1 i (c :: Meta) (f :: k -> *) (p :: k) = M1 {unM1 :: f p}
+--
+-- Note that the type of the M1 field is @f p@, so in order to express this
+-- type we add a parameter of type p that we can apply to values of type f.
+instance GGetCopy f p => GGetCopy (M1 D d f) p where
+    ggetCopy p (ConstructorCount tname size)
+      | size >= 2 = do
+          !code <- getWord8
+          M1 <$> ggetCopy p (ConstructorInfo tname size code)
+      | otherwise = M1 <$> ggetCopy p (ConstructorInfo tname size 0)
+    {-# INLINE ggetCopy #-}
+
+instance (GGetCopy f p, GGetCopy g p) => GGetCopy (f :+: g) p where
+    ggetCopy p (ConstructorInfo tname size code) = do
+      -- choose the left or right branch of the constructor types
+      -- based on whether the code is in the left or right half of the
+      -- remaining constructor count.
+      let sizeL = size `shiftR` 1
+          sizeR = size - sizeL
+      case code < sizeL of
+        True -> L1 <$> ggetCopy @f p (ConstructorInfo tname sizeL code)
+        False -> R1 <$> ggetCopy @g p (ConstructorInfo tname sizeR (code - sizeL))
+
+instance GGetCopy f p => GGetCopy (M1 C c f) p where
+    ggetCopy p d = M1 <$> ggetCopy p d
+    {-# INLINE ggetCopy #-}
+
+-- append constructor fields
+instance (GGetCopy f p, GGetCopy g p) => GGetCopy (f :*: g) p where
+    ggetCopy p d = (:*:) <$> ggetCopy @f p d <*> ggetCopy @g p d
+    {-# INLINE ggetCopy #-}
+
+instance GGetCopy f p => GGetCopy (M1 S c f) p where
+    ggetCopy p d = M1 <$> ggetCopy p d
+    {-# INLINE ggetCopy #-}
+
+instance SafeCopy a => GGetCopy (K1 R a) p where
+    ggetCopy _ _ = K1 <$> safeGet
+    {-# INLINE ggetCopy #-}
+
+instance GGetCopy U1 p where
+    ggetCopy _ _ = pure U1
+
+data DatatypeInfo =
+    ConstructorCount String Word8
+  | ConstructorInfo String Word8 Word8
+  deriving Show
 #endif
 
+{-
+instance SafeCopy a => GPutCopy (K1 R a) where
+    gputCopy = gputCopy . from . unK1
+    {-# INLINE gputCopy #-}
+-}
 
 -- constructGetterFromVersion :: SafeCopy a => Version a -> Kind (MigrateFrom (Reverse a)) -> Get (Get a)
 constructGetterFromVersion :: SafeCopy a => Version a -> Kind a -> Either String (Get a)
@@ -179,7 +293,7 @@ constructGetterFromVersion diskVersion orig_kind =
 
 -- | Parse a version tagged data type and then migrate it to the desired type.
 --   Any serialized value has been extended by the return type can be parsed.
-safeGet :: SafeCopy a => Get a
+safeGet :: forall a. SafeCopy a => Get a
 safeGet
     = join getSafeGet
 
@@ -200,7 +314,7 @@ getSafeGet
 -- | Serialize a data type by first writing out its version tag. This is much
 --   simpler than the corresponding 'safeGet' since previous versions don't
 --   come into play.
-safePut :: SafeCopy a => a -> Put
+safePut :: forall a. SafeCopy a => a -> Put
 safePut a
     = do putter <- getSafePut
          putter a
