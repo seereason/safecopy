@@ -161,10 +161,22 @@ instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
     gputCopy p d (R1 x) = gputCopy @g p d x
     {-# INLINE gputCopy #-}
 
+-- To get the current safecopy behavior we need to emulate the
+-- template haskell code here - collect the (a -> Put) values for all
+-- the fields and then run them in order.o
 instance GPutCopy a p => GPutCopy (M1 C c a) p where
     gputCopy p d@(ConstructorInfo _ size code) (M1 x) =
       (when (size >= 2) (putWord8 (fromIntegral code))) *> gputCopy p d x
     {-# INLINE gputCopy #-}
+
+class GPutSum f p where
+    gputSum :: p -> DatatypeInfo -> f p -> (Put, Put)
+
+instance (GPutSum f p, GPutSum g p) => GPutSum (f :*: g) p where
+    gputSum p d (a :*: b) = gputSum p d a <> gputSum p d b
+
+instance GPutCopy f p => GPutSum (M1 S c f) p where
+    gputSum p d a = (putByteString "11", gputCopy p d a)
 
 instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :*: g) p where
     gputCopy p d (a :*: b) = gputCopy p d a *> gputCopy p d b

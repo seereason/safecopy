@@ -4,6 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 import Data.ByteString (ByteString, unpack)
+import Data.Serialize.Get
 import Data.Serialize.Put
 import Data.SafeCopy
 import Test.HUnit
@@ -13,6 +14,7 @@ data T1 = T1 Char T2 T3
 data T2 = T2 Char
 data T3 = T3 Char
 
+t1 :: T1
 t1 = T1 'a' (T2 'b') (T3 'c')
 
 $(deriveSafeCopy 3 'base ''T1)
