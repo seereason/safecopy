@@ -141,56 +141,67 @@ class SafeCopy a where
     errorTypeName _ = "<unknown type>"
 
 #ifdef DEFAULT_SIGNATURES
-    default putCopy :: (GPutCopy (Rep a) (), Constructors a, GDatatype (Rep a)) => a -> Contained Put
-    putCopy a = (contain . gputCopy () (ConstructorInfo (gdatatypeName @a) (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
+    default putCopy :: (GPutCopy (Rep a) DatatypeInfo, Constructors a) => a -> Contained Put
+    putCopy a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
-    default getCopy :: (GGetCopy (Rep a) (), Constructors a, GDatatype (Rep a)) => Contained (Get a)
-    getCopy = contain (to <$> ggetCopy () (ConstructorCount (gdatatypeName @a) (fromIntegral (gconNum @a))))
+    default getCopy :: (GGetCopy (Rep a) DatatypeInfo, Constructors a) => Contained (Get a)
+    getCopy = contain (to <$> ggetCopy (ConstructorCount (fromIntegral (gconNum @a))))
 
 ------------------------------------------------------------------------
 
 class GPutCopy f p where
-    gputCopy :: p -> DatatypeInfo -> f p -> Put
+    gputCopy :: p -> f p -> Put
 
 instance GPutCopy a p => GPutCopy (M1 D c a) p where
-    gputCopy p d (M1 a) = gputCopy p d a
+    gputCopy p (M1 a) = gputCopy p a
     {-# INLINE gputCopy #-}
 
 instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
-    gputCopy p d (L1 x) = gputCopy @f p d x
-    gputCopy p d (R1 x) = gputCopy @g p d x
+    gputCopy p (L1 x) = gputCopy @f p x
+    gputCopy p (R1 x) = gputCopy @g p x
     {-# INLINE gputCopy #-}
 
 -- To get the current safecopy behavior we need to emulate the
 -- template haskell code here - collect the (a -> Put) values for all
 -- the fields and then run them in order.o
-instance GPutCopy a p => GPutCopy (M1 C c a) p where
-    gputCopy p d@(ConstructorInfo _ size code) (M1 x) =
-      (when (size >= 2) (putWord8 (fromIntegral code))) *> gputCopy p d x
+instance (GPutCopy a p, HasCode p, HasSize p) => GPutCopy (M1 C c a) p where
+    gputCopy p (M1 x) =
+      (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *> gputCopy p x
     {-# INLINE gputCopy #-}
 
+#if 1
+-- | gputSum traverses the fields of a constructor and returns a put
+-- for the safecopy versions and a put for the field values.
 class GPutSum f p where
-    gputSum :: p -> DatatypeInfo -> f p -> (Put, Put)
+    gputSum :: p -> f p -> (Put, Put)
 
 instance (GPutSum f p, GPutSum g p) => GPutSum (f :*: g) p where
-    gputSum p d (a :*: b) = gputSum p d a <> gputSum p d b
+    gputSum p (a :*: b) = gputSum p a <> gputSum p b
 
-instance GPutCopy f p => GPutSum (M1 S c f) p where
-    gputSum p d a = (putByteString "11", gputCopy p d a)
+instance GPutSum f p => GPutSum (M1 S c f) p where
+    gputSum p = gputSum p . unM1
+    {-# INLINE gputSum #-}
 
+instance SafeCopy a => GPutSum (K1 R a) p where
+    gputSum p (K1 a) =
+      (putByteString "11", safePut a)
+    {-# INLINE gputSum #-}
+#else
 instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :*: g) p where
-    gputCopy p d (a :*: b) = gputCopy p d a *> gputCopy p d b
+    gputCopy p (a :*: b) = gputCopy p a *> gputCopy p b
     {-# INLINE gputCopy #-}
 
 instance GPutCopy f p => GPutCopy (M1 S c f) p where
-    gputCopy p d = gputCopy p d . unM1
+    gputCopy p = gputCopy p . unM1
     {-# INLINE gputCopy #-}
 
 instance SafeCopy a => GPutCopy (K1 R a) p where
-    gputCopy _ _ (K1 x) = safePut x
+    gputCopy _ (K1 x) = safePut x
     {-# INLINE gputCopy #-}
+#endif
 
 {-
+-- Could we implement the K1 instance without the SafeCopy constraint?
 instance (Generic a, GPutCopy (Rep a) p) => GPutCopy (K1 R a) p where
     gputCopy p d =
       gputCopy p d . from . unK1
@@ -198,13 +209,13 @@ instance (Generic a, GPutCopy (Rep a) p) => GPutCopy (K1 R a) p where
 -}
 
 instance GPutCopy U1 p where
-    gputCopy _ _ _ = pure ()
+    gputCopy _ _ = pure ()
     {-# INLINE gputCopy #-}
 
 ------------------------------------------------------------------------
 
 class GGetCopy f p where
-    ggetCopy :: p -> DatatypeInfo -> Get (f a)
+    ggetCopy :: p -> Get (f a)
 
 -- | The M1 type has a fourth type parameter p:
 --
@@ -212,48 +223,63 @@ class GGetCopy f p where
 --
 -- Note that the type of the M1 field is @f p@, so in order to express this
 -- type we add a parameter of type p that we can apply to values of type f.
-instance GGetCopy f p => GGetCopy (M1 D d f) p where
-    ggetCopy p (ConstructorCount tname size)
-      | size >= 2 = do
+instance (GGetCopy f p, HasSize p, p ~ DatatypeInfo) => GGetCopy (M1 D d f) p where
+    ggetCopy p
+      | _size p >= 2 = do
           !code <- getWord8
-          M1 <$> ggetCopy p (ConstructorInfo tname size code)
-      | otherwise = M1 <$> ggetCopy p (ConstructorInfo tname size 0)
+          M1 <$> ggetCopy (ConstructorInfo (_size p) code)
+      | otherwise = M1 <$> ggetCopy (ConstructorInfo (_size p) 0)
     {-# INLINE ggetCopy #-}
 
-instance (GGetCopy f p, GGetCopy g p) => GGetCopy (f :+: g) p where
-    ggetCopy p (ConstructorInfo tname size code) = do
+instance (GGetCopy f p, GGetCopy g p, HasSize p, HasCode p, p ~ DatatypeInfo) => GGetCopy (f :+: g) p where
+    ggetCopy p = do
       -- choose the left or right branch of the constructor types
       -- based on whether the code is in the left or right half of the
       -- remaining constructor count.
-      let sizeL = size `shiftR` 1
-          sizeR = size - sizeL
-      case code < sizeL of
-        True -> L1 <$> ggetCopy @f p (ConstructorInfo tname sizeL code)
-        False -> R1 <$> ggetCopy @g p (ConstructorInfo tname sizeR (code - sizeL))
+      let sizeL = _size p `shiftR` 1
+          sizeR = _size p - sizeL
+      case _code p < sizeL of
+        True -> L1 <$> ggetCopy @f (ConstructorInfo sizeL (_code p))
+        False -> R1 <$> ggetCopy @g (ConstructorInfo sizeR (_code p - sizeL))
 
 instance GGetCopy f p => GGetCopy (M1 C c f) p where
-    ggetCopy p d = M1 <$> ggetCopy p d
+    ggetCopy p = M1 <$> ggetCopy p
     {-# INLINE ggetCopy #-}
 
 -- append constructor fields
 instance (GGetCopy f p, GGetCopy g p) => GGetCopy (f :*: g) p where
-    ggetCopy p d = (:*:) <$> ggetCopy @f p d <*> ggetCopy @g p d
+    ggetCopy p = (:*:) <$> ggetCopy @f p <*> ggetCopy @g p
     {-# INLINE ggetCopy #-}
 
 instance GGetCopy f p => GGetCopy (M1 S c f) p where
-    ggetCopy p d = M1 <$> ggetCopy p d
+    ggetCopy p = M1 <$> ggetCopy p
     {-# INLINE ggetCopy #-}
 
 instance SafeCopy a => GGetCopy (K1 R a) p where
-    ggetCopy _ _ = K1 <$> safeGet
+    ggetCopy _ = K1 <$> safeGet
     {-# INLINE ggetCopy #-}
 
 instance GGetCopy U1 p where
-    ggetCopy _ _ = pure U1
+    ggetCopy _ = pure U1
+
+class HasSize a where _size :: a -> Word8
+class HasCode a where _code :: a -> Word8
+
+instance HasSize Word8 where _size = id
+instance HasSize (Word8, Word8) where _size = fst
+instance HasCode (Word8, Word8) where _code = snd
+
+instance HasSize DatatypeInfo where
+  _size (ConstructorCount n) = n
+  _size (ConstructorInfo n _) = n
+
+instance HasCode DatatypeInfo where
+  _code (ConstructorCount _) = error "HasCode"
+  _code (ConstructorInfo _ c) = c
 
 data DatatypeInfo =
-    ConstructorCount String Word8
-  | ConstructorInfo String Word8 Word8
+    ConstructorCount Word8
+  | ConstructorInfo Word8 Word8
   deriving Show
 #endif
 
