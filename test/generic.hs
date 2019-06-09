@@ -12,9 +12,8 @@
 {-# OPTIONS -Wno-missing-signatures #-}
 
 import GHC.Generics
-import Data.SafeCopy.SafeCopy
-import Data.SafeCopy.Instances ()
-import Data.SafeCopy (deriveSafeCopy)
+import Data.SafeCopy
+import Data.SafeCopy.Internal
 import Data.Serialize (runGet, runPut, Serialize)
 import Data.Serialize.Get
 import Data.Serialize.Put
