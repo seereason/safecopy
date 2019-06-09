@@ -164,16 +164,15 @@ instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
 -- To get the current safecopy behavior we need to emulate the
 -- template haskell code here - collect the (a -> Put) values for all
 -- the fields and then run them in order.o
-instance (GPutCopy a p, HasCode p, HasSize p) => GPutCopy (M1 C c a) p where
+instance (GPutSum a p, HasCode p, HasSize p) => GPutCopy (M1 C c a) p where
     gputCopy p (M1 x) =
-      (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *> gputCopy p x
+      (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *> join (mconcat <$> sequence (gputSum p x))
     {-# INLINE gputCopy #-}
 
-#if 1
 -- | gputSum traverses the fields of a constructor and returns a put
 -- for the safecopy versions and a put for the field values.
 class GPutSum f p where
-    gputSum :: p -> f p -> (Put, Put)
+    gputSum :: p -> f p -> [PutM Put]
 
 instance (GPutSum f p, GPutSum g p) => GPutSum (f :*: g) p where
     gputSum p (a :*: b) = gputSum p a <> gputSum p b
@@ -182,31 +181,24 @@ instance GPutSum f p => GPutSum (M1 S c f) p where
     gputSum p = gputSum p . unM1
     {-# INLINE gputSum #-}
 
+#if 1
 instance SafeCopy a => GPutSum (K1 R a) p where
-    gputSum p (K1 a) =
-      (putByteString "11", safePut a)
+    gputSum _ (K1 a) = [getSafePut' a]
     {-# INLINE gputSum #-}
 #else
-instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :*: g) p where
-    gputCopy p (a :*: b) = gputCopy p a *> gputCopy p b
-    {-# INLINE gputCopy #-}
-
-instance GPutCopy f p => GPutCopy (M1 S c f) p where
-    gputCopy p = gputCopy p . unM1
-    {-# INLINE gputCopy #-}
-
-instance SafeCopy a => GPutCopy (K1 R a) p where
-    gputCopy _ (K1 x) = safePut x
-    {-# INLINE gputCopy #-}
-#endif
-
-{-
 -- Could we implement the K1 instance without the SafeCopy constraint?
-instance (Generic a, GPutCopy (Rep a) p) => GPutCopy (K1 R a) p where
-    gputCopy p d =
-      gputCopy p d . from . unK1
-    {-# INLINE gputCopy #-}
--}
+-- If we do it asks for Generic instances for all the primitive types,
+-- and then it asks for GPutSum instances for the GHC.Generics types.
+-- Probably a rabbit hole.
+deriving instance Generic Int
+deriving instance Generic Float
+deriving instance Generic Char
+
+instance (Generic a, GPutSum (Rep a) p) => GPutSum (K1 R a) p where
+    gputSum p =
+      gputSum p . from . unK1
+    {-# INLINE gputSum #-}
+#endif
 
 instance GPutCopy U1 p where
     gputCopy _ _ = pure ()
@@ -242,22 +234,31 @@ instance (GGetCopy f p, GGetCopy g p, HasSize p, HasCode p, p ~ DatatypeInfo) =>
         True -> L1 <$> ggetCopy @f (ConstructorInfo sizeL (_code p))
         False -> R1 <$> ggetCopy @g (ConstructorInfo sizeR (_code p - sizeL))
 
-instance GGetCopy f p => GGetCopy (M1 C c f) p where
-    ggetCopy p = M1 <$> ggetCopy p
+instance GGetSum f p => GGetCopy (M1 C c f) p where
+    ggetCopy p = M1 <$> join (ggetSum p)
     {-# INLINE ggetCopy #-}
 
 -- append constructor fields
-instance (GGetCopy f p, GGetCopy g p) => GGetCopy (f :*: g) p where
-    ggetCopy p = (:*:) <$> ggetCopy @f p <*> ggetCopy @g p
-    {-# INLINE ggetCopy #-}
+class GGetSum f p where
+    ggetSum :: p -> Get (Get (f a))
 
-instance GGetCopy f p => GGetCopy (M1 S c f) p where
-    ggetCopy p = M1 <$> ggetCopy p
-    {-# INLINE ggetCopy #-}
+instance (GGetSum f p, GGetSum g p) => GGetSum (f :*: g) p where
+    ggetSum p = do
+      fgetter <- ggetSum @f p
+      ggetter <- ggetSum @g p
+      return ((:*:) <$> fgetter <*> ggetter)
 
-instance SafeCopy a => GGetCopy (K1 R a) p where
-    ggetCopy _ = K1 <$> safeGet
-    {-# INLINE ggetCopy #-}
+instance GGetSum f p => GGetSum (M1 S c f) p where
+    ggetSum p = do
+      getter <- ggetSum p
+      return (M1 <$> getter)
+    {-# INLINE ggetSum #-}
+
+instance SafeCopy a => GGetSum (K1 R a) p where
+    ggetSum _ = do
+      getter <- getSafeGet
+      return (K1 <$> getter)
+    {-# INLINE ggetSum #-}
 
 instance GGetCopy U1 p where
     ggetCopy _ = pure U1
@@ -366,6 +367,15 @@ getSafePut
         Primitive -> return $ \a -> unsafeUnPack (putCopy $ asProxyType a proxy)
         _         -> do put (versionFromProxy proxy)
                         return $ \a -> unsafeUnPack (putCopy $ asProxyType a proxy)
+    where proxy = Proxy :: Proxy a
+
+getSafePut' :: forall a. SafeCopy a => a -> PutM Put
+getSafePut' a
+    = checkConsistency proxy $
+      case kindFromProxy proxy of
+        Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
+        _         -> do put (versionFromProxy proxy)
+                        return $ unsafeUnPack (putCopy $ asProxyType a proxy)
     where proxy = Proxy :: Proxy a
 
 -- | The extended_extension kind lets the system know that there is

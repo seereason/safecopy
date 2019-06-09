@@ -184,17 +184,12 @@ instance SafeCopy T3G where version = 5; kind = base
 
 orderTests :: Test
 orderTests =
-  let current =
-            ("0003" <> "0000" <> "0004" <> "0005" <> "61" <> "0000" <> "62" <> "0000" <> "63")
-          --   T1       Char       T2        T3       'a'     Char     'b'      Char      'c'
-      better =
-            ("0003" <> "0000" <> "61" <> "0004" <> "0000" <> "62" <> "0005" <> "0000" <> "63")
-          --   T1       Char      'a'      T2       Char     'b'       T3      Char      'c'
+  let expected = ("0003" <> "0000" <> "0004" <> "0005" <> "61" <> "0000" <> "62" <> "0000" <> "63")
+               --   T1       Char       T2        T3       'a'     Char     'b'      Char      'c'
   in
   TestList
-     [ TestCase (assertEqual "what I would have expected"             better  (showBytes (runPut (safePut t1))))
-     , TestCase (assertEqual "actual template haskell safeput output" current (showBytes (runPut (safePut t1))))
-     , TestCase (assertEqual "what the new implementation does"       better  (showBytes (runPut (safePut t1g))))
+     [ TestCase (assertEqual "actual template haskell safeput output" expected (showBytes (runPut (safePut t1))))
+     , TestCase (assertEqual "what the new implementation does"       expected (showBytes (runPut (safePut t1g))))
      ]
 
 main = do
