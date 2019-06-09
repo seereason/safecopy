@@ -200,9 +200,9 @@ instance (Generic a, GPutSum (Rep a) p) => GPutSum (K1 R a) p where
     {-# INLINE gputSum #-}
 #endif
 
-instance GPutCopy U1 p where
-    gputCopy _ _ = pure ()
-    {-# INLINE gputCopy #-}
+instance GPutSum U1 p where
+    gputSum _ _ = []
+    {-# INLINE gputSum #-}
 
 ------------------------------------------------------------------------
 
@@ -260,8 +260,9 @@ instance SafeCopy a => GGetSum (K1 R a) p where
       return (K1 <$> getter)
     {-# INLINE ggetSum #-}
 
-instance GGetCopy U1 p where
-    ggetCopy _ = pure U1
+instance GGetSum U1 p where
+    ggetSum _ = pure (pure U1)
+    {-# INLINE ggetSum #-}
 
 class HasSize a where _size :: a -> Word8
 class HasCode a where _code :: a -> Word8
