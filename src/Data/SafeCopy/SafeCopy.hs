@@ -364,13 +364,8 @@ getSafeGet
 --   come into play.
 safePut :: forall a. SafeCopy' a => a -> Put
 safePut a
-#if 1
     = do putter <- getSafePut' a
          putter
-#else
-    = do putter <- getSafePut
-         putter a
-#endif
 
 -- | Serialize the version tag and return the associated putter. This is useful
 --   when serializing multiple values with the same version. See 'getSafeGet'.
