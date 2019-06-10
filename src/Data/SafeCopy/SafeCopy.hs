@@ -166,7 +166,11 @@ instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
 -- the fields and then run them in order.o
 instance (GPutSum a p, HasCode p, HasSize p) => GPutCopy (M1 C c a) p where
     gputCopy p (M1 x) =
-      (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *> join (mconcat <$> sequence (gputSum p x))
+      (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *>
+        -- This is how I tried it first, and it works well but the
+        -- result is not the same as deriveSafeCopy.
+        -- mconcat (fmap join (gputSum p x))
+        join (mconcat <$> sequence (gputSum p x))
     {-# INLINE gputCopy #-}
 
 -- | gputSum traverses the fields of a constructor and returns a put
@@ -356,8 +360,13 @@ getSafeGet
 --   come into play.
 safePut :: forall a. SafeCopy a => a -> Put
 safePut a
+#if 1
+    = do putter <- getSafePut' a
+         putter
+#else
     = do putter <- getSafePut
          putter a
+#endif
 
 -- | Serialize the version tag and return the associated putter. This is useful
 --   when serializing multiple values with the same version. See 'getSafeGet'.
@@ -378,6 +387,27 @@ getSafePut' a
         _         -> do put (versionFromProxy proxy)
                         return $ unsafeUnPack (putCopy $ asProxyType a proxy)
     where proxy = Proxy :: Proxy a
+
+type GSafeCopy a = (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, Constructors a)
+
+-- | Generic only version of safePut. Instead of calling the putCopy
+-- method it calls a copy of the implementation of its default method.
+safePutGeneric :: forall a. GSafeCopy a => a -> Put
+safePutGeneric a = do
+  putter <- getSafePutDefault
+  putter
+  where
+    getSafePutDefault :: PutM Put
+    getSafePutDefault
+        = checkConsistency proxy $
+          case kindFromProxy proxy of
+            Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
+            _         -> do put (versionFromProxy proxy)
+                            return $ unsafeUnPack (putCopyDefault $ asProxyType a proxy)
+        where proxy = Proxy :: Proxy a
+
+    putCopyDefault :: a -> Contained Put
+    putCopyDefault a' = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a'
 
 -- | The extended_extension kind lets the system know that there is
 --   at least one previous and one future version of this type.

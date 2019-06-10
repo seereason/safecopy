@@ -19,16 +19,26 @@ import Data.Serialize.Get
 import Data.Serialize.Put
 import Text.Printf
 import Test.HUnit (Test(..), assertEqual, runTestTT)
+import Generic.Data as G hiding (unpack)
 
 -- Debugging
 import Data.Typeable hiding (Proxy)
--- import Debug.Trace
+import Debug.Trace
 import Data.ByteString (ByteString, unpack)
 
 -- Test types
 data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
 data Bar = Bar Float Foo deriving (Generic, Serialize, Show, Eq)
 data Baz = Baz1 Int | Baz2 Bool deriving (Generic, Serialize, Show, Eq)
+
+safePutTest :: forall a. (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, GConstructors (Rep a)) => a -> Put
+safePutTest a =
+  case runPut p1 == runPut p2 of
+    True -> p1
+    False -> trace (" custom: " ++ showBytes (runPut p1) ++ "\n generic: " ++ showBytes (runPut p2)) p1
+  where
+    p1 = safePut a
+    p2 = safePutGeneric a
 
 ----------------------------------------------
 
@@ -206,6 +216,7 @@ main = do
       , roundTrip baz2TH
       , roundTrip (Just 'x')
       , roundTrip (Nothing :: Maybe Char)
+      , roundTrip ('a', (123 :: Int), ("hello" :: String))
       , compareBytes fooTH foo
       , compareBytes barTH bar
       , compareBytes baz1TH baz1
