@@ -39,6 +39,7 @@ import Control.Monad
 import Data.Bits (shiftR)
 import Data.Int (Int32)
 import Data.List
+import Data.Typeable (Typeable)
 import Data.Word
 import GHC.Generics
 import Generic.Data as G
@@ -147,6 +148,9 @@ class SafeCopy a where
     default getCopy :: (GGetCopy (Rep a) DatatypeInfo, Constructors a) => Contained (Get a)
     getCopy = contain (to <$> ggetCopy (ConstructorCount (fromIntegral (gconNum @a))))
 
+-- | Debugging version of the SafeCopy constraint
+type SafeCopy' a = (SafeCopy a, Typeable a)
+
 ------------------------------------------------------------------------
 
 class GPutCopy f p where
@@ -186,7 +190,7 @@ instance GPutSum f p => GPutSum (M1 S c f) p where
     {-# INLINE gputSum #-}
 
 #if 1
-instance SafeCopy a => GPutSum (K1 R a) p where
+instance SafeCopy' a => GPutSum (K1 R a) p where
     gputSum _ (K1 a) = [getSafePut' a]
     {-# INLINE gputSum #-}
 #else
@@ -358,7 +362,7 @@ getSafeGet
 -- | Serialize a data type by first writing out its version tag. This is much
 --   simpler than the corresponding 'safeGet' since previous versions don't
 --   come into play.
-safePut :: forall a. SafeCopy a => a -> Put
+safePut :: forall a. SafeCopy' a => a -> Put
 safePut a
 #if 1
     = do putter <- getSafePut' a
@@ -370,7 +374,7 @@ safePut a
 
 -- | Serialize the version tag and return the associated putter. This is useful
 --   when serializing multiple values with the same version. See 'getSafeGet'.
-getSafePut :: forall a. SafeCopy a => PutM (a -> Put)
+getSafePut :: forall a. SafeCopy' a => PutM (a -> Put)
 getSafePut
     = checkConsistency proxy $
       case kindFromProxy proxy of
@@ -379,7 +383,7 @@ getSafePut
                         return $ \a -> unsafeUnPack (putCopy $ asProxyType a proxy)
     where proxy = Proxy :: Proxy a
 
-getSafePut' :: forall a. SafeCopy a => a -> PutM Put
+getSafePut' :: forall a. SafeCopy' a => a -> PutM Put
 getSafePut' a
     = checkConsistency proxy $
       case kindFromProxy proxy of
@@ -389,10 +393,11 @@ getSafePut' a
     where proxy = Proxy :: Proxy a
 
 type GSafeCopy a = (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, Constructors a)
+type GSafeCopy' a = (GSafeCopy a, Typeable a)
 
 -- | Generic only version of safePut. Instead of calling the putCopy
 -- method it calls a copy of the implementation of its default method.
-safePutGeneric :: forall a. GSafeCopy a => a -> Put
+safePutGeneric :: forall a. GSafeCopy' a => a -> Put
 safePutGeneric a = do
   putter <- getSafePutDefault
   putter

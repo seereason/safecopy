@@ -31,7 +31,7 @@ data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
 data Bar = Bar Float Foo deriving (Generic, Serialize, Show, Eq)
 data Baz = Baz1 Int | Baz2 Bool deriving (Generic, Serialize, Show, Eq)
 
-safePutTest :: forall a. (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, GConstructors (Rep a)) => a -> Put
+safePutTest :: forall a. (SafeCopy' a, Generic a, GPutCopy (Rep a) DatatypeInfo, GConstructors (Rep a)) => a -> Put
 safePutTest a =
   case runPut p1 == runPut p2 of
     True -> p1
