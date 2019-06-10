@@ -25,6 +25,8 @@ import Generic.Data as G hiding (unpack)
 import Data.Typeable hiding (Proxy)
 import Debug.Trace
 import Data.ByteString (ByteString, unpack)
+import Data.Char (chr)
+import Data.Word (Word8)
 
 -- Test types
 data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
@@ -35,7 +37,7 @@ safePutTest :: forall a. (SafeCopy' a, Generic a, GPutCopy (Rep a) DatatypeInfo,
 safePutTest a =
   case runPut p1 == runPut p2 of
     True -> p1
-    False -> trace (" custom: " ++ showBytes (runPut p1) ++ "\n generic: " ++ showBytes (runPut p2)) p1
+    False -> trace ("safePutTest failed for " ++ show (typeRep (Proxy :: Proxy a)) ++ "\n custom: " ++ showBytes (runPut p1) ++ "\n generic: " ++ showBytes (runPut p2)) p1
   where
     p1 = safePut a
     p2 = safePutGeneric a
@@ -65,7 +67,17 @@ compareBytes e a =
               (showBytes (runPut $ safePut a)))
 
 showBytes :: ByteString -> String
-showBytes b = mconcat (fmap (printf "%x") (unpack b))
+showBytes b = mconcat (fmap f (unpack b))
+   where f :: Word8 -> String
+         f 192 = "[G|"
+         f 193 = "[C|"
+         f 194 = "[T|"
+         f 195 = "]_ "
+         f 196 = " _<"
+         f 197 = ">_ "
+         f c | c >= 32 && c < 127 = [' ', chr (fromIntegral c), ' ']
+         f c | c == 0 = " __"
+         f c = printf " %02x" c
 
 -----------------------------
 -- Test Types and Values
@@ -193,12 +205,19 @@ instance SafeCopy T3G where version = 5; kind = base
 
 orderTests :: Test
 orderTests =
-  let expected = ("0003" <> "0000" <> "0004" <> "0005" <> "61" <> "0000" <> "62" <> "0000" <> "63")
-               --   T1       Char       T2        T3       'a'     Char     'b'      Char      'c'
-  in
+  let -- When I thought to myself "what should the output be type Baz"
+      -- without reference to reality, this is what I came up with.
+      _expected :: ByteString
+      _expected = ("\NUL\NUL\NUL\ETX" <> "\NUL\NUL\NUL\NUL" <> "a" <> "\NUL\NUL\NUL\EOT" <> "\NUL\NUL\NUL\NUL" <> "b" <> "\NUL\NUL\NUL\ENQ" <> "\NUL\NUL\NUL\NUL" <> "c")
+      --                  T1                   Char            'a'            T2                    Char          'b'            T3                   Char           'c'
+      -- But this is reality - the type, followed by its three field
+      -- types, followed by its three field values.
+      actual :: ByteString
+      actual = ("\NUL\NUL\NUL\ETX" <> "\NUL\NUL\NUL\NUL" <> "\NUL\NUL\NUL\EOT" <> "\NUL\NUL\NUL\ENQ" <> "a" <> "\NUL\NUL\NUL\NUL" <> "b" <> "\NUL\NUL\NUL\NUL" <> "c") in
+      --               T1                   Char                    T2                    T3            'a'           Char           'b'            Char          'c'
   TestList
-     [ TestCase (assertEqual "actual template haskell safeput output" expected (showBytes (runPut (safePut t1))))
-     , TestCase (assertEqual "what the new implementation does"       expected (showBytes (runPut (safePut t1g))))
+     [ TestCase (assertEqual "actual template haskell safeput output" (showBytes actual) (showBytes (runPut (safePut t1))))
+     , TestCase (assertEqual "what the new implementation does"       (showBytes actual) (showBytes (runPut (safePut t1g))))
      ]
 
 main = do
