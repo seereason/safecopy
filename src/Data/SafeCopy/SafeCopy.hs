@@ -394,20 +394,20 @@ type GSafeCopy' a = (GSafeCopy a, Typeable a)
 -- method it calls a copy of the implementation of its default method.
 safePutGeneric :: forall a. GSafeCopy' a => a -> Put
 safePutGeneric a = do
-  putter <- getSafePutDefault
+  putter <- getSafePutDefault a
   putter
-  where
-    getSafePutDefault :: PutM Put
-    getSafePutDefault
-        = checkConsistency proxy $
-          case kindFromProxy proxy of
-            Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
-            _         -> do put (versionFromProxy proxy)
-                            return $ unsafeUnPack (putCopyDefault $ asProxyType a proxy)
-        where proxy = Proxy :: Proxy a
 
-    putCopyDefault :: a -> Contained Put
-    putCopyDefault a' = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a'
+getSafePutDefault :: forall a. GSafeCopy' a => a -> PutM Put
+getSafePutDefault a
+    = checkConsistency proxy $
+      case kindFromProxy proxy of
+        Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
+        _         -> do put (versionFromProxy proxy)
+                        return $ unsafeUnPack (putCopyDefault $ asProxyType a proxy)
+    where proxy = Proxy :: Proxy a
+
+putCopyDefault :: forall a. GSafeCopy' a => a -> Contained Put
+putCopyDefault a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
 -- | The extended_extension kind lets the system know that there is
 --   at least one previous and one future version of this type.
