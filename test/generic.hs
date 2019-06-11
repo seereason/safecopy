@@ -15,24 +15,23 @@ import GHC.Generics
 import Data.SafeCopy
 import Data.SafeCopy.Internal
 import Data.Serialize (runGet, runPut, Serialize)
-import Data.Serialize.Get
-import Data.Serialize.Put
 import Text.Printf
 import Test.HUnit (Test(..), assertEqual, runTestTT)
-import Generic.Data as G hiding (unpack)
+--import Generic.Data as G hiding (unpack)
 
 -- Debugging
 import Data.Typeable hiding (Proxy)
-import Debug.Trace
+--import Debug.Trace
 import Data.ByteString (ByteString, unpack)
 import Data.Char (chr)
-import Data.Word (Word8)
+import Data.Word (Word8, Word32)
 
 -- Test types
 data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
 data Bar = Bar Float Foo deriving (Generic, Serialize, Show, Eq)
 data Baz = Baz1 Int | Baz2 Bool deriving (Generic, Serialize, Show, Eq)
 
+#if 0
 safePutTest :: forall a. (SafeCopy' a, Generic a, GPutCopy (Rep a) DatatypeInfo, GConstructors (Rep a)) => a -> Put
 safePutTest a =
   case runPut p1 == runPut p2 of
@@ -41,6 +40,7 @@ safePutTest a =
   where
     p1 = safePut a
     p2 = safePutGeneric a
+#endif
 
 ----------------------------------------------
 
@@ -105,7 +105,7 @@ baz2TH = Baz2TH True
 
 -- For comparison, these instances have the generated implementations
 -- of putCopy and getCopy
-#if 0
+#if 1
 $(deriveSafeCopy 3 'base ''FooTH)
 $(deriveSafeCopy 4 'base ''BarTH)
 $(deriveSafeCopy 5 'base ''BazTH)
@@ -179,29 +179,59 @@ instance SafeCopy BazTH where
       errorTypeName _ = "Main.BazTH"
 #endif
 
+data File
+    = File { _fileChksum :: Checksum             -- ^ The checksum of the file's contents
+           , _fileMessages :: [String]           -- ^ Messages received while manipulating the file
+           , _fileExt :: String                  -- ^ Name is formed by appending this to checksum
+           } deriving (Generic, Eq, Ord, Show)
+
+data FileSource
+    = TheURI String
+    | ThePath FilePath
+    deriving (Generic, Eq, Ord, Show)
+
+type Checksum = String
+
+$(deriveSafeCopy 10 'base ''File)
+$(deriveSafeCopy 11 'base ''FileSource)
+
+file1 = File ("checksum") [] ".jpg"
+file2 = File ("checksum") [] ".jpg"
+file3 = File ("checksum") [] ".jpg"
+
 ----------------------------------------------
 -- Demonstration of the ordering issue
 ----------------------------------------------
 
-data T1 = T1 Char T2 T3
-data T2 = T2 Char
-data T3 = T3 Char
+data T1 = T1 Char T2 T3 deriving (Generic, Show)
+data T2 = T2 Char deriving (Generic, Show)
+data T3 = T3 Char deriving (Generic, Show)
+data T4 = T4 Word32 Word32 Word32 deriving (Generic, Show)
 
 t1 = T1 'a' (T2 'b') (T3 'c')
+t2 = (T2 'b')
+t3 = (T3 'c')
+t4 = T4 100 200 300
 
 $(deriveSafeCopy 3 'base ''T1)
 $(deriveSafeCopy 4 'base ''T2)
 $(deriveSafeCopy 5 'base ''T3)
+$(deriveSafeCopy 6 'base ''T4)
 
-data T1G = T1G Char T2G T3G deriving Generic
-data T2G = T2G Char deriving Generic
-data T3G = T3G Char deriving Generic
+data T1G = T1G Char T2G T3G deriving (Generic, Show)
+data T2G = T2G Char deriving (Generic, Show)
+data T3G = T3G Char deriving (Generic, Show)
+data T4G = T4G Word32 Word32 Word32 deriving (Generic, Show)
 
 t1g = T1G 'a' (T2G 'b') (T3G 'c')
+t2g = (T2G 'b')
+t3g = (T3G 'c')
+t4g = T4G 100 200 300
 
 instance SafeCopy T1G where version = 3; kind = base
 instance SafeCopy T2G where version = 4; kind = base
 instance SafeCopy T3G where version = 5; kind = base
+instance SafeCopy T4G where version = 6; kind = base
 
 orderTests :: Test
 orderTests =
@@ -223,7 +253,8 @@ orderTests =
 main = do
   runTestTT
     (TestList
-      [ roundTrip ()
+      [ orderTests
+      , roundTrip ()
       , roundTrip ("hello" :: String)
       , roundTrip foo
       , roundTrip fooTH
@@ -236,9 +267,11 @@ main = do
       , roundTrip (Just 'x')
       , roundTrip (Nothing :: Maybe Char)
       , roundTrip ('a', (123 :: Int), ("hello" :: String))
+      , roundTrip file1
+      , roundTrip file2
+      , roundTrip file3
       , compareBytes fooTH foo
       , compareBytes barTH bar
       , compareBytes baz1TH baz1
       , compareBytes baz2TH baz2
-      , orderTests
       ])

@@ -2,9 +2,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# LANGUAGE CPP #-}
-#ifdef DEFAULT_SIGNATURES
-{-# LANGUAGE DefaultSignatures #-}
-#endif
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
@@ -38,11 +35,12 @@ import Data.Serialize
 import Control.Monad
 import Data.Bits (shiftR)
 import Data.Int (Int32)
-import Data.List
-import Data.Typeable (Typeable)
-import Data.Word
+import Data.List (nub)
+import Data.Set (insert, member, Set)
+import Data.Typeable (Typeable, TypeRep, typeOf)
+import Data.Word (Word8)
 import GHC.Generics
-import Generic.Data as G
+import Generic.Data as G (Constructors, gconIndex, gconNum)
 
 -- | The central mechanism for dealing with version control.
 --
@@ -141,15 +139,11 @@ class SafeCopy a where
     errorTypeName :: Proxy a -> String
     errorTypeName _ = "<unknown type>"
 
-#ifdef DEFAULT_SIGNATURES
     default putCopy :: (GPutCopy (Rep a) DatatypeInfo, Constructors a) => a -> Contained Put
     putCopy a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
     default getCopy :: (GGetCopy (Rep a) DatatypeInfo, Constructors a) => Contained (Get a)
     getCopy = contain (to <$> ggetCopy (ConstructorCount (fromIntegral (gconNum @a))))
-
--- | Debugging version of the SafeCopy constraint
-type SafeCopy' a = (SafeCopy a, Typeable a)
 
 ------------------------------------------------------------------------
 
@@ -168,49 +162,45 @@ instance (GPutCopy f p, GPutCopy g p) => GPutCopy (f :+: g) p where
 -- To get the current safecopy behavior we need to emulate the
 -- template haskell code here - collect the (a -> Put) values for all
 -- the fields and then run them in order.o
-instance (GPutSum a p, HasCode p, HasSize p) => GPutCopy (M1 C c a) p where
+instance (GPutFields a p, p ~ DatatypeInfo) => GPutCopy (M1 C c a) p where
     gputCopy p (M1 x) =
       (when (_size p >= 2) (putWord8 (fromIntegral (_code p)))) *>
         -- This is how I tried it first, and it works well but the
         -- result is not the same as deriveSafeCopy.
-        -- mconcat (fmap join (gputSum p x))
-        join (mconcat <$> sequence (gputSum p x))
+        -- mconcat (fmap join (gputFields p x))
+        -- join (mconcat <$> sequence (fmap snd (gputFields p x)))
+      ((\(xs, ys) -> mconcat xs <> mconcat ys) . unzip . snd) (gputFields p x mempty)
+      {-(fst (execRWS () Nothing (gputFields p x) :: (Maybe TypeRep, Put)))-}
     {-# INLINE gputCopy #-}
 
--- | gputSum traverses the fields of a constructor and returns a put
+-- | gputFields traverses the fields of a constructor and returns a put
 -- for the safecopy versions and a put for the field values.
-class GPutSum f p where
-    gputSum :: p -> f p -> [PutM Put]
+class GPutFields f p where
+    gputFields :: p -> f p -> (Set TypeRep, [(Put, Put)]) -> (Set TypeRep, [(Put, Put)])
 
-instance (GPutSum f p, GPutSum g p) => GPutSum (f :*: g) p where
-    gputSum p (a :*: b) = gputSum p a <> gputSum p b
+instance (GPutFields f p, GPutFields g p) => GPutFields (f :*: g) p where
+    gputFields p (a :*: b) st = gputFields p b (gputFields p a st)
 
-instance GPutSum f p => GPutSum (M1 S c f) p where
-    gputSum p = gputSum p . unM1
-    {-# INLINE gputSum #-}
+instance GPutFields f p => GPutFields (M1 S c f) p where
+    gputFields p (M1 a) st = gputFields p a st
+    {-# INLINE gputFields #-}
 
-#if 1
-instance SafeCopy' a => GPutSum (K1 R a) p where
-    gputSum _ (K1 a) = [getSafePut' a]
-    {-# INLINE gputSum #-}
-#else
--- Could we implement the K1 instance without the SafeCopy constraint?
--- If we do it asks for Generic instances for all the primitive types,
--- and then it asks for GPutSum instances for the GHC.Generics types.
--- Probably a rabbit hole.
-deriving instance Generic Int
-deriving instance Generic Float
-deriving instance Generic Char
+instance (SafeCopy a, Typeable a) => GPutFields (K1 R a) p where
+    gputFields _ (K1 a) (reps, puts) = do
+      let typ = typeOf a
+      let (ver, val) = getSafePutGeneric putCopy a
+      case member typ reps of
+        True -> (reps, puts <> [(mempty, val)])
+        False -> (insert typ reps, puts <> [(ver, val)])
+    {-# INLINE gputFields #-}
 
-instance (Generic a, GPutSum (Rep a) p) => GPutSum (K1 R a) p where
-    gputSum p =
-      gputSum p . from . unK1
-    {-# INLINE gputSum #-}
-#endif
-
-instance GPutSum U1 p where
-    gputSum _ _ = []
-    {-# INLINE gputSum #-}
+instance GPutFields U1 p where
+    gputFields _ _ (reps, puts) = do
+      let typ = typeOf ()
+      case (member typ reps) of
+        False -> (insert typ reps, puts)
+        True -> (reps, puts)
+    {-# INLINE gputFields #-}
 
 ------------------------------------------------------------------------
 
@@ -223,7 +213,7 @@ class GGetCopy f p where
 --
 -- Note that the type of the M1 field is @f p@, so in order to express this
 -- type we add a parameter of type p that we can apply to values of type f.
-instance (GGetCopy f p, HasSize p, p ~ DatatypeInfo) => GGetCopy (M1 D d f) p where
+instance (GGetCopy f p, p ~ DatatypeInfo) => GGetCopy (M1 D d f) p where
     ggetCopy p
       | _size p >= 2 = do
           !code <- getWord8
@@ -231,7 +221,7 @@ instance (GGetCopy f p, HasSize p, p ~ DatatypeInfo) => GGetCopy (M1 D d f) p wh
       | otherwise = M1 <$> ggetCopy (ConstructorInfo (_size p) 0)
     {-# INLINE ggetCopy #-}
 
-instance (GGetCopy f p, GGetCopy g p, HasSize p, HasCode p, p ~ DatatypeInfo) => GGetCopy (f :+: g) p where
+instance (GGetCopy f p, GGetCopy g p, p ~ DatatypeInfo) => GGetCopy (f :+: g) p where
     ggetCopy p = do
       -- choose the left or right branch of the constructor types
       -- based on whether the code is in the left or right half of the
@@ -272,26 +262,10 @@ instance GGetSum U1 p where
     ggetSum _ = pure (pure U1)
     {-# INLINE ggetSum #-}
 
-class HasSize a where _size :: a -> Word8
-class HasCode a where _code :: a -> Word8
-
-instance HasSize Word8 where _size = id
-instance HasSize (Word8, Word8) where _size = fst
-instance HasCode (Word8, Word8) where _code = snd
-
-instance HasSize DatatypeInfo where
-  _size (ConstructorCount n) = n
-  _size (ConstructorInfo n _) = n
-
-instance HasCode DatatypeInfo where
-  _code (ConstructorCount _) = error "HasCode"
-  _code (ConstructorInfo _ c) = c
-
 data DatatypeInfo =
-    ConstructorCount Word8
-  | ConstructorInfo Word8 Word8
+    ConstructorCount {_size :: Word8}
+  | ConstructorInfo {_size :: Word8, _code :: Word8}
   deriving Show
-#endif
 
 {-
 instance SafeCopy a => GPutCopy (K1 R a) where
@@ -341,7 +315,7 @@ constructGetterFromVersion diskVersion orig_kind =
 
 -- | Parse a version tagged data type and then migrate it to the desired type.
 --   Any serialized value has been extended by the return type can be parsed.
-safeGet :: forall a. SafeCopy a => Get a
+safeGet :: SafeCopy a => Get a
 safeGet
     = join getSafeGet
 
@@ -362,14 +336,18 @@ getSafeGet
 -- | Serialize a data type by first writing out its version tag. This is much
 --   simpler than the corresponding 'safeGet' since previous versions don't
 --   come into play.
-safePut :: forall a. SafeCopy' a => a -> Put
+safePut :: SafeCopy a => a -> Put
 safePut a
-    = do putter <- getSafePut' a
-         putter
+#if 1
+    = do putter <- getSafePut
+         putter a
+#else
+    = (\(t, v) -> t <> v) (getSafePutGeneric putCopy a)
+#endif
 
 -- | Serialize the version tag and return the associated putter. This is useful
 --   when serializing multiple values with the same version. See 'getSafeGet'.
-getSafePut :: forall a. SafeCopy' a => PutM (a -> Put)
+getSafePut :: forall a. SafeCopy a => PutM (a -> Put)
 getSafePut
     = checkConsistency proxy $
       case kindFromProxy proxy of
@@ -378,35 +356,32 @@ getSafePut
                         return $ \a -> unsafeUnPack (putCopy $ asProxyType a proxy)
     where proxy = Proxy :: Proxy a
 
-getSafePut' :: forall a. SafeCopy' a => a -> PutM Put
-getSafePut' a
+-- | This version returns (Put, Put), the collected version tags and
+-- the collected serialized fields.  The original 'getSafePut' result
+-- type prevents doing this because each fields may have a different
+-- type.  Maybe you can show me a better way
+getSafePutGeneric :: forall a. SafeCopy a => (a -> Contained Put) -> a -> (Put, Put)
+getSafePutGeneric cput a
     = checkConsistency proxy $
       case kindFromProxy proxy of
-        Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
-        _         -> do put (versionFromProxy proxy)
-                        return $ unsafeUnPack (putCopy $ asProxyType a proxy)
+        Primitive -> (mempty, unsafeUnPack (cput $ asProxyType a proxy))
+        _         -> do (put (versionFromProxy proxy),
+                         unsafeUnPack (cput $ asProxyType a proxy))
     where proxy = Proxy :: Proxy a
 
 type GSafeCopy a = (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, Constructors a)
-type GSafeCopy' a = (GSafeCopy a, Typeable a)
 
--- | Generic only version of safePut. Instead of calling the putCopy
--- method it calls a copy of the implementation of its default method.
-safePutGeneric :: forall a. GSafeCopy' a => a -> Put
+-- | Generic only version of safePut. Instead of calling 'putCopy' it
+-- calls 'putCopyDefault', a copy of the implementation of the
+-- 'SafeCopy' default method for 'putCopy'.
+safePutGeneric :: forall a. GSafeCopy a => a -> Put
 safePutGeneric a = do
-  putter <- getSafePutDefault a
-  putter
+  let (versions, fields) = getSafePutGeneric putCopyDefault a
+  versions <> fields
 
-getSafePutDefault :: forall a. GSafeCopy' a => a -> PutM Put
-getSafePutDefault a
-    = checkConsistency proxy $
-      case kindFromProxy proxy of
-        Primitive -> return $ unsafeUnPack (putCopy $ asProxyType a proxy)
-        _         -> do put (versionFromProxy proxy)
-                        return $ unsafeUnPack (putCopyDefault $ asProxyType a proxy)
-    where proxy = Proxy :: Proxy a
-
-putCopyDefault :: forall a. GSafeCopy' a => a -> Contained Put
+-- | See 'safePutGeneric'.  A copy of the code in the default
+-- implementation of the putCopy method.
+putCopyDefault :: forall a. GSafeCopy a => a -> Contained Put
 putCopyDefault a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
 -- | The extended_extension kind lets the system know that there is
