@@ -236,36 +236,36 @@ instance (GGetCopy f p, GGetCopy g p, p ~ DatatypeInfo) => GGetCopy (f :+: g) p 
         True -> L1 <$> ggetCopy @f (ConstructorInfo sizeL (_code p))
         False -> R1 <$> ggetCopy @g (ConstructorInfo sizeR (_code p - sizeL))
 
-instance GGetSum f p => GGetCopy (M1 C c f) p where
+instance GGetFields f p => GGetCopy (M1 C c f) p where
     ggetCopy p = do
-      M1 <$> join (evalStateT (ggetSum p) mempty)
+      M1 <$> join (evalStateT (ggetFields p) mempty)
     {-# INLINE ggetCopy #-}
 
 -- append constructor fields
-class GGetSum f p where
-    ggetSum :: p -> StateT (Map TypeRep Int32) Get (Get (f a))
+class GGetFields f p where
+    ggetFields :: p -> StateT (Map TypeRep Int32) Get (Get (f a))
 
-instance (GGetSum f p, GGetSum g p) => GGetSum (f :*: g) p where
-    ggetSum p = do
-      fgetter <- ggetSum @f p
-      ggetter <- ggetSum @g p
+instance (GGetFields f p, GGetFields g p) => GGetFields (f :*: g) p where
+    ggetFields p = do
+      fgetter <- ggetFields @f p
+      ggetter <- ggetFields @g p
       return ((:*:) <$> fgetter <*> ggetter)
 
-instance GGetSum f p => GGetSum (M1 S c f) p where
-    ggetSum p = do
-      getter <- ggetSum p
+instance GGetFields f p => GGetFields (M1 S c f) p where
+    ggetFields p = do
+      getter <- ggetFields p
       return (M1 <$> getter)
-    {-# INLINE ggetSum #-}
+    {-# INLINE ggetFields #-}
 
-instance (SafeCopy a, Typeable a) => GGetSum (K1 R a) p where
-    ggetSum _ = do
-      getter <- getSafeGet'
+instance (SafeCopy a, Typeable a) => GGetFields (K1 R a) p where
+    ggetFields _ = do
+      getter <- getSafeGetGeneric
       return (K1 <$> getter)
-    {-# INLINE ggetSum #-}
+    {-# INLINE ggetFields #-}
 
-instance GGetSum U1 p where
-    ggetSum _ = pure (pure U1)
-    {-# INLINE ggetSum #-}
+instance GGetFields U1 p where
+    ggetFields _ = pure (pure U1)
+    {-# INLINE ggetFields #-}
 
 data DatatypeInfo =
     ConstructorCount {_size :: Word8}
@@ -342,10 +342,10 @@ getSafeGet
 -- version, this one is run for every field and must decide whether to
 -- read a version or not.  It constructs a Map TypeRep Int32 and reads
 -- whent he new TypeRep is not in the map.  Assumes Version a ~ Int32.
-getSafeGet' ::
+getSafeGetGeneric ::
   forall a. (SafeCopy a, Typeable a)
   => StateT (Map TypeRep Int32) Get (Get a)
-getSafeGet'
+getSafeGetGeneric
     = checkConsistency proxy $
       case kindFromProxy proxy of
         Primitive -> return $ unsafeUnPack getCopy
