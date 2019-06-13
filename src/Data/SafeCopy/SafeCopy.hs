@@ -196,18 +196,21 @@ instance (SafeCopy a, Typeable a) => GPutFields (K1 R a) p where
       reps <- RWS.get
       let typ = typeOf a
       let (ver, val) = getSafePutGeneric putCopy a
-      case member typ reps of
-        True -> tell [val]
-        False -> lift ver >> RWS.modify (Set.insert typ) >> tell [val]
+      when (not (member typ reps)) (lift ver >> RWS.modify (Set.insert typ))
+      tell [val]
     {-# INLINE gputFields #-}
 
+#if 1
+-- This corresponds to ggetFields, but does it match deriveSafeCopy?
 instance GPutFields U1 p where
-    gputFields _ _ = do
-      reps <- RWS.get
-      let typ = typeOf ()
-      case (member typ reps) of
-        False -> RWS.modify (Set.insert typ)
-        True -> return mempty
+    gputFields _ _ =
+      return ()
+#else
+-- This outputs the version tag for (), which is 1.
+instance (GPutFields (K1 R ()) p) => GPutFields U1 p where
+    gputFields p _ =
+      gputFields p (K1 () :: K1 R () p)
+#endif
     {-# INLINE gputFields #-}
 
 ------------------------------------------------------------------------
@@ -268,19 +271,13 @@ instance (SafeCopy a, Typeable a) => GGetFields (K1 R a) p where
     {-# INLINE ggetFields #-}
 
 instance GGetFields U1 p where
-    ggetFields _ = pure (pure U1)
+    ggetFields _p = pure (pure U1)
     {-# INLINE ggetFields #-}
 
 data DatatypeInfo =
     ConstructorCount {_size :: Word8}
   | ConstructorInfo {_size :: Word8, _code :: Word8}
   deriving Show
-
-{-
-instance SafeCopy a => GPutCopy (K1 R a) where
-    gputCopy = gputCopy . from . unK1
-    {-# INLINE gputCopy #-}
--}
 
 -- constructGetterFromVersion :: SafeCopy a => Version a -> Kind (MigrateFrom (Reverse a)) -> Get (Get a)
 constructGetterFromVersion :: SafeCopy a => Version a -> Kind a -> Either String (Get a)

@@ -30,9 +30,9 @@ import Data.UUID.Types (fromString)
 import Data.UUID.Types.Internal (UUID(..))
 
 -- Test types
-data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
-data Bar = Bar Float Foo deriving (Generic, Serialize, Show, Eq)
-data Baz = Baz1 Int | Baz2 Bool deriving (Generic, Serialize, Show, Eq)
+data Foo = Foo Int Char deriving (Generic, Show, Eq)
+data Bar = Bar Float Foo deriving (Generic, Show, Eq)
+data Baz = Baz1 Int | Baz2 Bool deriving (Generic, Show, Eq)
 
 #if 0
 safePutTest :: forall a. (SafeCopy' a, Generic a, GPutCopy (Rep a) DatatypeInfo, GConstructors (Rep a)) => a -> Put
@@ -239,8 +239,6 @@ instance SafeCopy T4G where version = 6; kind = base
 
 newtype ReportID = ReportID { unReportID :: UUID } deriving (Generic, Eq, Ord, Typeable, Show)
 
-$(deriveSafeCopy 0 'base ''UUID)
--- instance SafeCopy UUID where version = 0
 instance SafeCopy ReportID where version = 1
 
 u :: UUID
