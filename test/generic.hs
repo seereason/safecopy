@@ -25,7 +25,8 @@ import Data.Typeable hiding (Proxy)
 import Data.ByteString (ByteString, unpack)
 import Data.Char (chr)
 import Data.Word (Word8, Word32)
-import Data.UUID.Types (toString, fromString)
+import Data.UUID.Orphans ()
+import Data.UUID.Types (fromString)
 import Data.UUID.Types.Internal (UUID(..))
 
 -- Test types
@@ -238,7 +239,6 @@ instance SafeCopy T4G where version = 6; kind = base
 
 newtype ReportID = ReportID { unReportID :: UUID } deriving (Generic, Eq, Ord, Typeable, Show)
 
-deriving instance Generic UUID
 $(deriveSafeCopy 0 'base ''UUID)
 -- instance SafeCopy UUID where version = 0
 instance SafeCopy ReportID where version = 1

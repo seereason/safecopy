@@ -35,6 +35,7 @@ import Data.Serialize as Ser
 import Control.Monad
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State as State (evalStateT, get, modify, StateT)
+import Control.Monad.Trans.RWS as RWS (evalRWST, get, modify, RWST, tell)
 import Data.Bits (shiftR)
 import Data.Int (Int32)
 import Data.List (nub)
@@ -173,37 +174,40 @@ instance (GPutFields a p, p ~ DatatypeInfo) => GPutCopy (M1 C c a) p where
         -- result is not the same as deriveSafeCopy.
         -- mconcat (fmap join (gputFields p x))
         -- join (mconcat <$> sequence (fmap snd (gputFields p x)))
-      ((\(xs, ys) -> mconcat xs <> mconcat ys) . unzip . snd) (gputFields p x mempty)
+      (do putter <- (mconcat . snd) <$> (evalRWST (gputFields p x) () mempty)
+          putter)
       {-(fst (execRWS () Nothing (gputFields p x) :: (Maybe TypeRep, Put)))-}
     {-# INLINE gputCopy #-}
 
 -- | gputFields traverses the fields of a constructor and returns a put
 -- for the safecopy versions and a put for the field values.
 class GPutFields f p where
-    gputFields :: p -> f p -> (Set TypeRep, [(Put, Put)]) -> (Set TypeRep, [(Put, Put)])
+    gputFields :: p -> f p -> RWST () [Put] (Set TypeRep) PutM ()
 
 instance (GPutFields f p, GPutFields g p) => GPutFields (f :*: g) p where
-    gputFields p (a :*: b) st = gputFields p b (gputFields p a st)
+    gputFields p (a :*: b) = gputFields p a >> gputFields p b
 
 instance GPutFields f p => GPutFields (M1 S c f) p where
-    gputFields p (M1 a) st = gputFields p a st
+    gputFields p (M1 a) = gputFields p a
     {-# INLINE gputFields #-}
 
 instance (SafeCopy a, Typeable a) => GPutFields (K1 R a) p where
-    gputFields _ (K1 a) (reps, puts) = do
+    gputFields _ (K1 a) = do
+      reps <- RWS.get
       let typ = typeOf a
       let (ver, val) = getSafePutGeneric putCopy a
       case member typ reps of
-        True -> (reps, puts <> [(mempty, val)])
-        False -> (Set.insert typ reps, puts <> [(ver, val)])
+        True -> tell [val]
+        False -> lift ver >> RWS.modify (Set.insert typ) >> tell [val]
     {-# INLINE gputFields #-}
 
 instance GPutFields U1 p where
-    gputFields _ _ (reps, puts) = do
+    gputFields _ _ = do
+      reps <- RWS.get
       let typ = typeOf ()
       case (member typ reps) of
-        False -> (Set.insert typ reps, puts)
-        True -> (reps, puts)
+        False -> RWS.modify (Set.insert typ)
+        True -> return mempty
     {-# INLINE gputFields #-}
 
 ------------------------------------------------------------------------
@@ -353,7 +357,7 @@ getSafeGetGeneric
                         reps <- State.get
                         v <- maybe (lift Ser.get) pure (Map.lookup rep reps)
                         case constructGetterFromVersion (unsafeCoerce v) a_kind of
-                          Right getter -> modify (Map.insert rep v) >> return getter
+                          Right getter -> State.modify (Map.insert rep v) >> return getter
                           Left msg     -> fail msg
     where proxy = Proxy :: Proxy a
 
