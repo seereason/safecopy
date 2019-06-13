@@ -363,7 +363,8 @@ mkPutCopy deriveType cons = funD 'putCopy $ map mkPutClause cons
 #if 1
                clause [putClause] (normalB putCopyBody) []
 #else
-               -- Use this to compare the result of the custom instance to the generic
+               -- Use this to compare the result of the custom
+               -- instance to the generic result on every put.
                clause [putClause] (normalB [|let (p1 :: Contained Put) = $putCopyBody
                                                  (p2 :: Contained Put) = contain (safePutGeneric $(varE x))
                                                  (b1 :: ByteString) = Data.Serialize.runPut (unsafeUnPack p1)

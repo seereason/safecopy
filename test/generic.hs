@@ -25,6 +25,8 @@ import Data.Typeable hiding (Proxy)
 import Data.ByteString (ByteString, unpack)
 import Data.Char (chr)
 import Data.Word (Word8, Word32)
+import Data.UUID.Types (toString, fromString)
+import Data.UUID.Types.Internal (UUID(..))
 
 -- Test types
 data Foo = Foo Int Char deriving (Generic, Serialize, Show, Eq)
@@ -44,6 +46,7 @@ safePutTest a =
 
 ----------------------------------------------
 
+-- Compare a value to the result of encoding and then decoding it.
 roundTrip :: forall a. (SafeCopy a, Typeable a, Eq a, Show a) => a -> Test
 roundTrip x = do
   -- putStrLn ("\n========== " ++ show x ++ " :: " ++ show (typeRep (Proxy :: Proxy a)) ++ " ==========")
@@ -233,6 +236,18 @@ instance SafeCopy T2G where version = 4; kind = base
 instance SafeCopy T3G where version = 5; kind = base
 instance SafeCopy T4G where version = 6; kind = base
 
+newtype ReportID = ReportID { unReportID :: UUID } deriving (Generic, Eq, Ord, Typeable, Show)
+
+deriving instance Generic UUID
+$(deriveSafeCopy 0 'base ''UUID)
+-- instance SafeCopy UUID where version = 0
+instance SafeCopy ReportID where version = 1
+
+u :: UUID
+Just u = fromString "de89101a-e87f-4677-8ded-47b8963493c4"
+rid :: ReportID
+rid = ReportID u
+
 orderTests :: Test
 orderTests =
   let -- When I thought to myself "what should the output be type Baz"
@@ -270,6 +285,8 @@ main = do
       , roundTrip file1
       , roundTrip file2
       , roundTrip file3
+      , roundTrip u
+      , roundTrip rid
       , compareBytes fooTH foo
       , compareBytes barTH bar
       , compareBytes baz1TH baz1

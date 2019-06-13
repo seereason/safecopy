@@ -30,17 +30,21 @@
 --
 module Data.SafeCopy.SafeCopy where
 
-import Data.Serialize
+import Data.Serialize as Ser
 
 import Control.Monad
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.State as State (evalStateT, get, modify, StateT)
 import Data.Bits (shiftR)
 import Data.Int (Int32)
 import Data.List (nub)
-import Data.Set (insert, member, Set)
-import Data.Typeable (Typeable, TypeRep, typeOf)
+import Data.Map as Map (Map, lookup, insert)
+import Data.Set as Set (insert, member, Set)
+import Data.Typeable (Typeable, TypeRep, typeOf, typeRep)
 import Data.Word (Word8)
 import GHC.Generics
 import Generic.Data as G (Constructors, gconIndex, gconNum)
+import Unsafe.Coerce (unsafeCoerce)
 
 -- | The central mechanism for dealing with version control.
 --
@@ -191,14 +195,14 @@ instance (SafeCopy a, Typeable a) => GPutFields (K1 R a) p where
       let (ver, val) = getSafePutGeneric putCopy a
       case member typ reps of
         True -> (reps, puts <> [(mempty, val)])
-        False -> (insert typ reps, puts <> [(ver, val)])
+        False -> (Set.insert typ reps, puts <> [(ver, val)])
     {-# INLINE gputFields #-}
 
 instance GPutFields U1 p where
     gputFields _ _ (reps, puts) = do
       let typ = typeOf ()
       case (member typ reps) of
-        False -> (insert typ reps, puts)
+        False -> (Set.insert typ reps, puts)
         True -> (reps, puts)
     {-# INLINE gputFields #-}
 
@@ -233,12 +237,13 @@ instance (GGetCopy f p, GGetCopy g p, p ~ DatatypeInfo) => GGetCopy (f :+: g) p 
         False -> R1 <$> ggetCopy @g (ConstructorInfo sizeR (_code p - sizeL))
 
 instance GGetSum f p => GGetCopy (M1 C c f) p where
-    ggetCopy p = M1 <$> join (ggetSum p)
+    ggetCopy p = do
+      M1 <$> join (evalStateT (ggetSum p) mempty)
     {-# INLINE ggetCopy #-}
 
 -- append constructor fields
 class GGetSum f p where
-    ggetSum :: p -> Get (Get (f a))
+    ggetSum :: p -> StateT (Map TypeRep Int32) Get (Get (f a))
 
 instance (GGetSum f p, GGetSum g p) => GGetSum (f :*: g) p where
     ggetSum p = do
@@ -252,9 +257,9 @@ instance GGetSum f p => GGetSum (M1 S c f) p where
       return (M1 <$> getter)
     {-# INLINE ggetSum #-}
 
-instance SafeCopy a => GGetSum (K1 R a) p where
+instance (SafeCopy a, Typeable a) => GGetSum (K1 R a) p where
     ggetSum _ = do
-      getter <- getSafeGet
+      getter <- getSafeGet'
       return (K1 <$> getter)
     {-# INLINE ggetSum #-}
 
@@ -327,9 +332,28 @@ getSafeGet
     = checkConsistency proxy $
       case kindFromProxy proxy of
         Primitive -> return $ unsafeUnPack getCopy
-        a_kind    -> do v <- get
+        a_kind    -> do v <- Ser.get
                         case constructGetterFromVersion v a_kind of
                           Right getter -> return getter
+                          Left msg     -> fail msg
+    where proxy = Proxy :: Proxy a
+
+-- | Whereas the other 'getSafeGet' is only run when we know we need a
+-- version, this one is run for every field and must decide whether to
+-- read a version or not.  It constructs a Map TypeRep Int32 and reads
+-- whent he new TypeRep is not in the map.  Assumes Version a ~ Int32.
+getSafeGet' ::
+  forall a. (SafeCopy a, Typeable a)
+  => StateT (Map TypeRep Int32) Get (Get a)
+getSafeGet'
+    = checkConsistency proxy $
+      case kindFromProxy proxy of
+        Primitive -> return $ unsafeUnPack getCopy
+        a_kind    -> do let rep = typeRep (Proxy :: Proxy a)
+                        reps <- State.get
+                        v <- maybe (lift Ser.get) pure (Map.lookup rep reps)
+                        case constructGetterFromVersion (unsafeCoerce v) a_kind of
+                          Right getter -> modify (Map.insert rep v) >> return getter
                           Left msg     -> fail msg
     where proxy = Proxy :: Proxy a
 
@@ -432,7 +456,7 @@ instance Num (Version a) where
     fromInteger i = Version (fromInteger i)
 
 instance Serialize (Version a) where
-    get = liftM Version get
+    get = liftM Version Ser.get
     put = put . unVersion
 
 -------------------------------------------------
