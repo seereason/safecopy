@@ -12,7 +12,7 @@
 {-# OPTIONS -Wno-missing-signatures #-}
 
 import GHC.Generics
-#if !MIN_VERSION_base(4,8,0)
+#if !MIN_VERSION_base(4,11,0)
 import Data.Monoid ((<>))
 #endif
 import Data.SafeCopy
