@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, TemplateHaskell, CPP #-}
+{-# LANGUAGE TemplateHaskell, CPP #-}
 
 -- Hack for bug in older Cabal versions
 #ifndef MIN_VERSION_template_haskell
@@ -360,20 +360,7 @@ mkPutCopy deriveType cons = funD 'putCopy $ map mkPutClause cons
                                    putFunsDecs ++
                                    [ noBindS $ varE (putFuns typ) `appE` varE var | (typ, var) <- zip (conTypes con) putVars ] ++
                                    [ noBindS $ varE 'return `appE` tupE [] ])
-#if 1
                clause [putClause] (normalB putCopyBody) []
-#else
-               -- Use this to compare the result of the custom
-               -- instance to the generic result on every put.
-               clause [putClause] (normalB [|let (p1 :: Contained Put) = $putCopyBody
-                                                 (p2 :: Contained Put) = contain (safePutGeneric $(varE x))
-                                                 (b1 :: ByteString) = Data.Serialize.runPut (unsafeUnPack p1)
-                                                 (b2 :: ByteString) = BS.drop 4 (runPut (unsafeUnPack p2)) in
-                                             case b1 == b2 of
-                                               True -> p1
-                                               False -> error ("mismatch on type " ++ show (typeOf $(varE x)) ++ ":\n expected: " ++ showBytes b1 ++ "\n  generic: " ++ showBytes b2)
-                                            |]) []
-#endif
 
 mkGetCopy :: DeriveType -> String -> [(Integer, Con)] -> DecQ
 mkGetCopy deriveType tyName cons = valD (varP 'getCopy) (normalB $ varE 'contain `appE` mkLabel) []

@@ -2,6 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# LANGUAGE CPP #-}
+#ifdef DEFAULT_SIGNATURES
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
@@ -14,6 +15,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+#endif
 
 -----------------------------------------------------------------------------
 -- |
@@ -30,15 +32,19 @@
 --
 module Data.SafeCopy.SafeCopy where
 
-import Data.Serialize as Ser
+import Data.Serialize
 
 import Control.Monad
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.State as State (evalStateT, get, modify, StateT)
-import Control.Monad.Trans.RWS as RWS (evalRWST, get, modify, RWST, tell)
-import Data.Bits (shiftR)
 import Data.Int (Int32)
-import Data.List (nub)
+import Data.List
+
+#ifdef DEFAULT_SIGNATURES
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.State as State (evalStateT, modify, StateT)
+import qualified Control.Monad.Trans.State as State (get)
+import Control.Monad.Trans.RWS as RWS (evalRWST, modify, RWST, tell)
+import qualified Control.Monad.Trans.RWS as RWS (get)
+import Data.Bits (shiftR)
 import Data.Map as Map (Map, lookup, insert)
 import Data.Set as Set (insert, member, Set)
 import Data.Typeable (Typeable, TypeRep, typeOf, typeRep)
@@ -46,6 +52,7 @@ import Data.Word (Word8)
 import GHC.Generics
 import Generic.Data as G (Constructors, gconIndex, gconNum)
 import Unsafe.Coerce (unsafeCoerce)
+#endif
 
 -- | The central mechanism for dealing with version control.
 --
@@ -144,13 +151,12 @@ class SafeCopy a where
     errorTypeName :: Proxy a -> String
     errorTypeName _ = "<unknown type>"
 
+#ifdef DEFAULT_SIGNATURES
     default putCopy :: (GPutCopy (Rep a) DatatypeInfo, Constructors a) => a -> Contained Put
     putCopy a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
     default getCopy :: (GGetCopy (Rep a) DatatypeInfo, Constructors a) => Contained (Get a)
     getCopy = contain (to <$> ggetCopy (ConstructorCount (fromIntegral (gconNum @a))))
-
-------------------------------------------------------------------------
 
 class GPutCopy f p where
     gputCopy :: p -> f p -> Put
@@ -176,7 +182,6 @@ instance (GPutFields a p, p ~ DatatypeInfo) => GPutCopy (M1 C c a) p where
         -- join (mconcat <$> sequence (fmap snd (gputFields p x)))
       (do putter <- (mconcat . snd) <$> (evalRWST (gputFields p x) () mempty)
           putter)
-      {-(fst (execRWS () Nothing (gputFields p x) :: (Maybe TypeRep, Put)))-}
     {-# INLINE gputCopy #-}
 
 -- | gputFields traverses the fields of a constructor and returns a put
@@ -193,11 +198,7 @@ instance GPutFields f p => GPutFields (M1 S c f) p where
 
 instance (SafeCopy a, Typeable a) => GPutFields (K1 R a) p where
     gputFields _ (K1 a) = do
-      reps <- RWS.get
-      let typ = typeOf a
-      let (ver, val) = getSafePutGeneric putCopy a
-      when (not (member typ reps)) (lift ver >> RWS.modify (Set.insert typ))
-      tell [val]
+      getSafePutGeneric putCopy a
     {-# INLINE gputFields #-}
 
 #if 1
@@ -279,6 +280,63 @@ data DatatypeInfo =
   | ConstructorInfo {_size :: Word8, _code :: Word8}
   deriving Show
 
+-- | Whereas the other 'getSafeGet' is only run when we know we need a
+-- version, this one is run for every field and must decide whether to
+-- read a version or not.  It constructs a Map TypeRep Int32 and reads
+-- whent he new TypeRep is not in the map.  Assumes Version a ~ Int32.
+getSafeGetGeneric ::
+  forall a. (SafeCopy a, Typeable a)
+  => StateT (Map TypeRep Int32) Get (Get a)
+getSafeGetGeneric
+    = checkConsistency proxy $
+      case kindFromProxy proxy of
+        Primitive -> return $ unsafeUnPack getCopy
+        a_kind    -> do let rep = typeRep (Proxy :: Proxy a)
+                        reps <- State.get
+                        v <- maybe (lift get) pure (Map.lookup rep reps)
+                        -- This coerce creates an assumption that Version a ~ Int32
+                        case constructGetterFromVersion (unsafeCoerce v) a_kind of
+                          Right getter -> State.modify (Map.insert rep v) >> return getter
+                          Left msg     -> fail msg
+    where proxy = Proxy :: Proxy a
+
+-- | This version returns (Put, Put), the collected version tags and
+-- the collected serialized fields.  The original 'getSafePut' result
+-- type prevents doing this because each fields may have a different
+-- type.  Maybe you can show me a better way
+getSafePutGeneric ::
+  forall a. (SafeCopy a, Typeable a)
+  => (a -> Contained Put)
+  -> a
+  -> RWST () [Put] (Set TypeRep) PutM ()
+getSafePutGeneric cput a
+    = checkConsistency proxy $
+      case kindFromProxy proxy of
+        Primitive -> tell [unsafeUnPack (cput $ asProxyType a proxy)]
+        _         -> do reps <- RWS.get
+                        let typ = typeOf a
+                        when (not (member typ reps)) $ do
+                          lift (put (versionFromProxy proxy))
+                          RWS.modify (Set.insert typ)
+                        tell [unsafeUnPack (cput $ asProxyType a proxy)]
+    where proxy = Proxy :: Proxy a
+
+type GSafeCopy a = (SafeCopy a, Typeable a, Generic a, GPutCopy (Rep a) DatatypeInfo, Constructors a)
+
+-- | Generic only version of safePut. Instead of calling 'putCopy' it
+-- calls 'putCopyDefault', a copy of the implementation of the
+-- 'SafeCopy' default method for 'putCopy'.
+safePutGeneric :: forall a. GSafeCopy a => a -> Put
+safePutGeneric a = do
+  putter <- (mconcat . snd) <$> evalRWST (getSafePutGeneric putCopyDefault a) () mempty
+  putter
+
+-- | See 'safePutGeneric'.  A copy of the code in the default
+-- implementation of the putCopy method.
+putCopyDefault :: forall a. GSafeCopy a => a -> Contained Put
+putCopyDefault a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
+#endif
+
 -- constructGetterFromVersion :: SafeCopy a => Version a -> Kind (MigrateFrom (Reverse a)) -> Get (Get a)
 constructGetterFromVersion :: SafeCopy a => Version a -> Kind a -> Either String (Get a)
 constructGetterFromVersion diskVersion orig_kind =
@@ -333,28 +391,9 @@ getSafeGet
     = checkConsistency proxy $
       case kindFromProxy proxy of
         Primitive -> return $ unsafeUnPack getCopy
-        a_kind    -> do v <- Ser.get
+        a_kind    -> do v <- get
                         case constructGetterFromVersion v a_kind of
                           Right getter -> return getter
-                          Left msg     -> fail msg
-    where proxy = Proxy :: Proxy a
-
--- | Whereas the other 'getSafeGet' is only run when we know we need a
--- version, this one is run for every field and must decide whether to
--- read a version or not.  It constructs a Map TypeRep Int32 and reads
--- whent he new TypeRep is not in the map.  Assumes Version a ~ Int32.
-getSafeGetGeneric ::
-  forall a. (SafeCopy a, Typeable a)
-  => StateT (Map TypeRep Int32) Get (Get a)
-getSafeGetGeneric
-    = checkConsistency proxy $
-      case kindFromProxy proxy of
-        Primitive -> return $ unsafeUnPack getCopy
-        a_kind    -> do let rep = typeRep (Proxy :: Proxy a)
-                        reps <- State.get
-                        v <- maybe (lift Ser.get) pure (Map.lookup rep reps)
-                        case constructGetterFromVersion (unsafeCoerce v) a_kind of
-                          Right getter -> State.modify (Map.insert rep v) >> return getter
                           Left msg     -> fail msg
     where proxy = Proxy :: Proxy a
 
@@ -363,12 +402,8 @@ getSafeGetGeneric
 --   come into play.
 safePut :: SafeCopy a => a -> Put
 safePut a
-#if 1
     = do putter <- getSafePut
          putter a
-#else
-    = (\(t, v) -> t <> v) (getSafePutGeneric putCopy a)
-#endif
 
 -- | Serialize the version tag and return the associated putter. This is useful
 --   when serializing multiple values with the same version. See 'getSafeGet'.
@@ -380,34 +415,6 @@ getSafePut
         _         -> do put (versionFromProxy proxy)
                         return $ \a -> unsafeUnPack (putCopy $ asProxyType a proxy)
     where proxy = Proxy :: Proxy a
-
--- | This version returns (Put, Put), the collected version tags and
--- the collected serialized fields.  The original 'getSafePut' result
--- type prevents doing this because each fields may have a different
--- type.  Maybe you can show me a better way
-getSafePutGeneric :: forall a. SafeCopy a => (a -> Contained Put) -> a -> (Put, Put)
-getSafePutGeneric cput a
-    = checkConsistency proxy $
-      case kindFromProxy proxy of
-        Primitive -> (mempty, unsafeUnPack (cput $ asProxyType a proxy))
-        _         -> do (put (versionFromProxy proxy),
-                         unsafeUnPack (cput $ asProxyType a proxy))
-    where proxy = Proxy :: Proxy a
-
-type GSafeCopy a = (SafeCopy a, Generic a, GPutCopy (Rep a) DatatypeInfo, Constructors a)
-
--- | Generic only version of safePut. Instead of calling 'putCopy' it
--- calls 'putCopyDefault', a copy of the implementation of the
--- 'SafeCopy' default method for 'putCopy'.
-safePutGeneric :: forall a. GSafeCopy a => a -> Put
-safePutGeneric a = do
-  let (versions, fields) = getSafePutGeneric putCopyDefault a
-  versions <> fields
-
--- | See 'safePutGeneric'.  A copy of the code in the default
--- implementation of the putCopy method.
-putCopyDefault :: forall a. GSafeCopy a => a -> Contained Put
-putCopyDefault a = (contain . gputCopy (ConstructorInfo (fromIntegral (gconNum @a)) (fromIntegral (gconIndex a))) . from) a
 
 -- | The extended_extension kind lets the system know that there is
 --   at least one previous and one future version of this type.
@@ -457,7 +464,7 @@ instance Num (Version a) where
     fromInteger i = Version (fromInteger i)
 
 instance Serialize (Version a) where
-    get = liftM Version Ser.get
+    get = liftM Version get
     put = put . unVersion
 
 -------------------------------------------------

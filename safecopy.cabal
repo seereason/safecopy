@@ -15,7 +15,7 @@ Category:            Data, Parsing
 Build-type:          Simple
 Extra-source-files: CHANGELOG.md
 Cabal-version:       >=1.8
-tested-with:         GHC==7.8.4, GHC==7.10.2, GHC==8.0.2, GHC==8.2.1, GHC==8.4.1
+tested-with:         GHC==8.0.2, GHC==8.2.1, GHC==8.4.1
 
 Source-repository head
   type:          git
@@ -34,8 +34,8 @@ Library
                        array < 0.6,
                        cereal >= 0.5 && < 0.6,
                        bytestring < 0.11,
-                       containers >= 0.3 && < 0.7,
                        generic-data >= 0.3,
+                       containers >= 0.3 && < 0.7,
                        old-time < 1.2,
                        template-haskell < 2.15,
                        text < 1.3,
@@ -75,5 +75,4 @@ Test-suite generic
   Main-is:             generic.hs
   Hs-Source-Dirs:      test/
   GHC-Options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Build-depends:       base, bytestring, cereal, safecopy, HUnit, uuid, uuid-orphans
-
+  Build-depends:       base, bytestring, cereal, safecopy, HUnit
